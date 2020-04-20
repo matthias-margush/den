@@ -1,0 +1,1186 @@
+#!/usr/bin/env bash
+#
+# Copyright 2020 Matthias C. Margush
+#
+# Redistribution and use in source and binary forms, with or without modification,
+# are permitted provided that the following conditions are met:
+#
+# 1. Redistributions of source code must retain the above copyright notice, this
+#    list of conditions and the following disclaimer.
+#
+# 2. Redistributions in binary form must reproduce the above copyright notice,
+#    this list of conditions and the following disclaimer in the documentation
+#    and/or other materials provided with the distribution.
+#
+# 3. Neither the name of the copyright holder nor the names of its contributors
+#    may be used to endorse or promote products derived from this software without
+#    specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+# ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+# WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+# ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+# (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+# LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+# ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+# SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+trap 'j=$(jobs -p); if [ "$j" != "" ]; then echo kill $p; kill "$p"; fi' EXIT
+
+SCRIPT_DIR=$(dirname "$0")
+XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-$HOME/.config}
+export DEN_PATH="${DEN_PATH:-$XDG_CONFIG_HOME/den:$PWD/.den}"
+DEN_VERBOSE=${DEN_VERBOSE:-f}
+
+export DEN_VERBOSE
+
+red='\033[0;31m'
+green='\033[0;32m'
+clear='\033[0m'
+
+be_quiet=0
+quietly() {
+  be_quiet=$((be_quiet+1))
+  "$@"
+  local result=$?
+  be_quiet=$((be_quiet-1))
+  return $result
+}
+
+indentation=0
+indent() {
+  indentation=$((indentation+1))
+}
+
+unindent() {
+  indentation=$((indentation-1))
+}
+
+padding() {
+  local i="$indentation"
+  while [ $i -gt 0 ]
+  do
+    printf '%s' ' '
+    i=$((i-1))
+  done
+}
+
+err() {
+  local format="$1"; shift
+  padding
+  # shellcheck disable=SC2059
+  printf "$format" "$@" >&2
+  return 1
+}
+
+clearline() {
+  printf "\r                                                                                            "
+}
+
+checkmark() {
+  local format="$1"; shift
+  if [ $be_quiet -eq 0 ]
+  then
+    clearline
+    printf "\r"
+    padding
+    # shellcheck disable=SC2059
+    printf "${green}[✔]${clear} $format" "$@"
+  fi
+}
+
+xmark() {
+  local format="$1"; shift
+  padding
+  # shellcheck disable=SC2059
+  printf "${red}[✘]${clear} $format" "$@"
+}
+
+hint() {
+  local format="$1"; shift
+  printf '\n'
+  padding
+  # shellcheck disable=SC2059
+  printf "   ✋ $format\n" "$@"
+}
+
+logged() {
+  local file="$1"; shift
+  local p
+  p=$(padding)
+  printf "\n %s❯ %s\n" "$p" "$*"
+  sed "s/^/ $p/" "$file"
+}
+
+verbose() {
+    [ "$DEN_VERBOSE" = 'y' ] \
+    || [ "$DEN_VERBOSE" = 't' ] \
+    || [ "$DEN_VERBOSE" = 'yes' ] \
+    || [ "$DEN_VERBOSE" = 'true' ]
+
+  return $?
+}
+
+spin() {
+  local output="$1"
+  local pid="$2"
+  local message="$3"
+
+  if verbose
+  then
+    sed "s/^/ $(padding)/" <"$1"
+    wait "$pid"
+    return $ret
+  fi
+
+  if [ $be_quiet -gt 0 ]
+  then
+    wait "$pid"
+    return $?
+  fi
+
+  while ps a | awk '{print $1}' | grep -q "$pid"
+  do
+    printf "\r$(padding)${green}[.] ${clear}$message"; sleep 0.1
+    printf "\r$(padding)${green}[-] ${clear}$message"; sleep 0.1
+    printf "\r$(padding)${green}[+] ${clear}$message"; sleep 0.1
+    printf "\r$(padding)${green}[*] ${clear}$message"; sleep 0.1
+    printf "\r$(padding)${green}[-] ${clear}$message"; sleep 0.1
+  done
+  wait "$pid"
+  return $?
+}
+
+run_step() {
+  local message="$1"
+  shift
+  local out
+  if verbose
+  then
+    out=$(mktemp -u); trap "{ rm -f $out; }" EXIT
+    mkfifo -m 600 "$out"
+  else
+    out=$(mktemp); trap "{ rm -f $out; }" EXIT
+  fi
+
+  if [ "$message" != "" ] && [ $be_quiet -eq 0 ]
+  then
+    verbose && printf "\n$(padding)${green}[✔] ${clear}$message:\n"
+    verbose && printf " %s❯ %s\n" "$(padding)" "$*"
+    verbose || printf "\r$(padding)${green}[ ] ${clear}$message"
+  fi
+
+  sh -c "$*" >"$out" 2>"$out" &
+  spin "$out" $! "$message"
+
+  local result=$?
+  if [ $result -ne 0 ]
+  then
+    clearline
+    printf "\r$(padding)${red}[✘] ${clear}%s: Failed 😿" "$message"
+    if ! verbose
+    then
+      logged "$out" "$@"
+    fi
+  else
+    if [ $be_quiet -eq 0 ] && ! verbose
+    then
+      clearline
+      printf "\r$(padding)${green}[✔] ${clear}$message"
+      verbose && logged "$out" "$@"
+    fi
+  fi
+  return $result
+}
+
+run() {
+  printf "\r"
+  run_step "$@"
+  result=$?
+  if [ $be_quiet -eq 0 ]
+  then
+    printf '\n'
+  fi
+  return $result
+}
+
+hints() {
+  local label="$1"
+  case "$label" in
+    k8s-connectivity )
+      hint "If you're using minikube - is it running (minikube start)?"
+      ;;
+    *)
+      hint 'Hmmm. 🤷'
+      ;;
+  esac
+}
+
+den_cmd() {
+  err_usage() { # den
+    local format="$1"; shift
+    # shellcheck disable=SC2059
+    err "$format\n\n" "$@"
+    den_usage
+    return 1
+  }
+
+  den_usage() {
+    cat <<EOF >&2
+den ACTION
+
+  A kit for working with kubernetes environments.
+
+Flags:
+  -h, --help    Print this help
+
+Actions:
+  Defining Dens:
+    list         Show available dens
+    define       Define a den
+    describe     Print den details
+
+  Using Dens:
+    use          Make a den active
+    up           Bring up a stack in the active den
+    down         Destroy a den
+
+  Troubleshooting:
+    docs         Read the docs
+    doctor       Check system for prerequisites
+    bootstrap    Print prerequisites install instructions for SYSTEM.
+    help         Print this help
+EOF
+  }
+
+  precheck() {
+    quietly den_doctor || return 1
+    kubectl version >/dev/null || (hints k8s-connectivity; return 1)
+  }
+
+  switch-den-context() {
+    local context="$1"
+    local namespace="$2"
+    local cluster="$3"
+    local user="$4"
+    kubectl config set-context "$context" --namespace="$namespace" --cluster "$cluster" --user "$user" >/dev/null 2>&1
+    kubectl config use-context "$context" >/dev/null 2>&1
+    return $?
+  }
+
+  ensure-namespace() {
+    local namespace="$1"
+    if ! kubectl get namespace "$namespace" >&- 2>&-
+    then
+      run "Activating namespace $namespace" kubectl create namespace "$namespace"
+      return $?
+    fi
+    return 0
+  }
+
+  den_action() {
+    local action="$1"
+
+    case "$action" in
+      ''|-h|--help|help)
+        den_usage "$@"
+        return $?
+        ;;
+      doctor)
+        shift
+        den_doctor "$@"
+        return $?
+        ;;
+      bootstrap)
+        shift
+        den_bootstrap "$@"
+        return $?
+        ;;
+      define)
+        shift
+        define_cmd "$@"
+        return $?
+        ;;
+      use)
+        shift
+        use_cmd "$@"
+        return $?
+        ;;
+      list)
+        shift
+        list_cmd "$@"
+        return $?
+        ;;
+      down)
+        shift
+        down_cmd "$@"
+        return $?
+        ;;
+      describe)
+        shift
+        describe_cmd "$@"
+        return $?
+        ;;
+      run)
+        shift
+        den_run "$@"
+        ;;
+      up)
+        shift
+        den_stack "$@"
+        ;;
+      doc|docs)
+        shift
+        docs
+        ;;
+      *)
+        den_run "$@"
+        return $?
+        ;;
+    esac
+  }
+
+  den_doctor() {
+    usage() { # den doctor
+      cat <<-EOF >&2
+	den doctor
+
+	  Check system for prerequisites.
+
+	Flags:
+	  -h, --help    Print this help
+
+	Actions:
+	  help    Print this help
+EOF
+    }
+
+    quickcheck() { # den doctor
+      local good=0
+      for prereq in "$@"
+      do
+        command -v "$prereq" >/dev/null || good=1
+      done
+      return $good
+    }
+
+    doctor_diagnose() {
+      for prereq in "$@"
+      do
+        if command -v "$prereq" >/dev/null
+        then
+          checkmark "Installed: %s\n" "$prereq"
+        else
+          xmark "Missing: %s\n" "$prereq"
+        fi
+      done
+      hint "Run 'den bootstrap -' for prerequisites instructions."
+      return 1
+    }
+
+    doctor_check() {
+      if quickcheck "$@"
+      then
+        checkmark "All good\n"
+      else
+        doctor_diagnose "$@"
+      fi
+      return $?
+    }
+
+    doctor_action() {
+      local action="$1"
+
+      case "$action" in
+        -h|--help|help)
+          usage "$@"
+          return $?
+          ;;
+        '')
+          doctor_check kubectl curl helm
+          return $?
+          ;;
+        *)
+          err_usage "Unknown arguments: %s" "$@"
+          return 1
+          ;;
+      esac
+    }
+
+    doctor_action "$@" # den doctor
+  }
+
+  den_bootstrap() {
+    usage() { # den bootstrap
+      cat <<-EOF >&2
+	Usage: den bootstrap SYSTEM
+
+	  Print prerequisites install instructions for SYSTEM.
+
+	Arguments:
+	  SYSTEM    The 'uname -s' of the system to bootstrap. Use '-' to autodetect.
+
+	Flags:
+	  -h, --help    Print this help
+
+	Actions:
+	  Print this help
+EOF
+    }
+
+    bootstrap_darwin() { # den bootstrap
+      cat <<-EOF
+  # To install these prerequisites, run these commands, or
+  # eval "\$(den bootstrap -)"
+
+      brew install kubernetes-cli helm
+EOF
+    }
+
+    bootstrap() { # den bootstrap
+      local system="$1"
+      case "$system" in
+        Darwin)
+          bootstrap_darwin
+          ;;
+        *)
+          printf "Sorry :(. No instructions yet for %s.\n" "$system" >&2
+          return 1
+          ;;
+      esac
+    }
+
+    action() { # den bootstrap
+      local system="$1"
+
+      case "$system" in
+        ''|-h|--help|help)
+          usage "$@"
+          return $?
+          ;;
+        '-')
+          bootstrap "$(uname -s)"
+          return $?
+          ;;
+        *)
+          bootstrap "$system"
+          return $?
+          ;;
+      esac
+    }
+
+    action "$@"
+  }
+
+  define_cmd() {
+    define_usage() {
+      cat <<EOF >&2
+Usage: den define NAME
+
+  Define a den.
+
+Arguments:
+        NAME    The name of the den to define.
+
+Flags:
+  -c, --cluster-name      The cluster for the den
+  -u, --cluster-user      The cluster user for the den (defaults to cluster name)
+  -n, --namespace         The k8s namespace for the den
+  -h, --help              Print this help
+
+Actions:
+  Print this help
+EOF
+    }
+
+    define_den() {
+      local name
+      local cluster_name=minikube
+      local cluster_user=minikube
+      local namespace
+      local profile
+
+      case "$1" in
+        -*)
+          err_usage "Name is required"
+          return $?
+          ;;
+        *)
+          name="$1"
+          shift
+          ;;
+      esac
+
+      local conf_dir="$XDG_CONFIG_HOME/den/dens/$name"
+      if [ -f "$conf_dir/config" ]
+      then
+        . "$conf_dir/config"
+        export DEN_NAMESPACE
+        current_cluster_name="$DEN_CLUSTER_NAME"
+        current_cluster_user="$DEN_CLUSTER_USER"
+        current_namespace="$DEN_NAMESPACE"
+        current_profile="$DEN_PROFILE"
+      fi
+
+      for arg
+      do
+        case "$arg" in
+          -h|--help|help)
+            define_usage "$@"
+            return $?
+            ;;
+          -c|--cluster-name|--cluster-name=*)
+            local v=${1/=/ }; shift; set -- $v "$@"; shift
+            case "$1" in
+              -*) err_usage "Cluster name is missing"; return 1;;
+              *) cluster_name="$1"; shift ;;
+            esac
+            ;;
+          -u|--cluster-user|--cluster-user=*)
+            local v=${1/=/ }; shift; set -- $v "$@"; shift
+            case "$1" in
+              -*) err_usage "Cluster user is missing"; return 1;;
+              *) cluster_user="$1"; shift ;;
+            esac
+            ;;
+          -n|--namespace|--namespace=*)
+            local v=${1/=/ }; shift; set -- $v "$@"; shift
+            case "$1" in
+              -*) err_usage "Namespace is missing"; return 1 ;;
+              *) namespace="$1"; shift ;;
+            esac
+            ;;
+          -p|--profile|--profile=*)
+            local v=${1/=/ }; shift; set -- $v "$@"; shift
+            case "$1" in
+              -*) err_usage "Profile is missing"; return 1;;
+              *) profile="$1"; shift ;;
+            esac
+            ;;
+          -*)
+            err_usage "Unknown option: %s" "$arg"
+            return $?
+            ;;
+        esac
+      done
+
+      if [ "$cluster_name" = "" ]
+      then
+        cluster_name="$current_cluster_name"
+      fi
+
+      if [ "$cluster_user" = "" ]
+      then
+        cluster_user="$current_cluster_user"
+      fi
+
+      if [ "$cluster_user" == "" ]
+      then
+        cluster_user="$cluster_name"
+      fi
+
+      if [ "$namespace" = "" ]
+      then
+        namespace="$current_namespace"
+      fi
+
+      if [ "$cluster_name" = "" ]
+      then
+        err_usage "Cluster name is missing"
+        return 1
+      elif [ "$namespace" = "" ]
+      then
+        err_usage "Namespace is missing"
+        return 1
+      fi
+
+      mkdir -p "$conf_dir"
+      echo "DEN_CONTEXT=$cluster_name-$namespace" >"$conf_dir/config"
+      echo "DEN_CLUSTER_NAME=$cluster_name" >>"$conf_dir/config"
+      echo "DEN_CLUSTER_USER=$cluster_user" >>"$conf_dir/config"
+      echo "DEN_NAMESPACE=$namespace" >>"$conf_dir/config"
+      echo "DEN_PROFILE=$profile" >>"$conf_dir/config"
+      checkmark "Defined den: %s\n" "$name"
+    }
+
+    define_action() { # den define
+      local name="$1"
+      case "$name" in
+        ''|-h|help|--help)
+          define_usage
+          ;;
+        *)
+          define_den "$@"
+          ;;
+      esac
+    }
+
+    define_action "$@"
+  }
+
+  describe_cmd() {
+    describe_usage() {
+      cat <<EOF >&2
+Usage: den describe NAME
+
+  Print den details.
+
+Arguments:
+        NAME    The name of the den to describe.
+
+Flags:
+  -h, --help         Print this help
+
+Actions:
+  Print this help
+EOF
+    }
+
+    describe_action() {
+      local name
+
+      local name="$1"
+      case "$name" in
+        -h|--help|help|'')
+          describe_usage "$@"
+          return $?
+          ;;
+        *)
+          name="$1"
+          shift
+          ;;
+      esac
+
+      local den_dir
+      for dir in $(echo "${DEN_PATH//:/$'\n'}")
+      do
+        d="$dir/dens/$name"
+        if [ -d "$d" ]
+        then
+          den_dir="$d"
+          break
+        fi
+      done
+
+      if [ "$den_dir" = "" ]
+      then
+        xmark "$name is undefined\n"
+        hint "List available dens with 'den list'"
+        hint "Define a den with 'den define'"
+        return 1
+      fi
+
+      cat "$den_dir/config"
+    }
+
+    describe_action "$@"
+  }
+
+  use_cmd() {
+    use_usage() { # den use
+      cat <<EOF >&2
+ Usage: den use NAME
+
+   Use a den.
+
+ Arguments:
+   NAME    The name of the den to use.
+
+ Flags:
+   -h, --help    Print this help
+
+ Actions:
+   Print this help
+EOF
+    }
+
+    use_den() {
+      local name="$1"
+      local path
+
+      for dir in $(echo "${DEN_PATH//:/$'\n'}")
+      do
+        den_path="$dir/dens/$name"
+        if [ -d "$den_path" ]
+        then
+          path="$den_path"
+          break
+        fi
+      done
+
+      if [ "$path" = "" ]
+      then
+        xmark "$name is undefined\n"
+        hint "xList available dens with 'den list'"
+        hint "Define a den with 'den define'"
+        return 1
+      fi
+
+      echo "$name" >"$XDG_CONFIG_HOME/den/active"
+
+      checkmark "Activated den %s\n" "$name"
+    }
+
+    use_action() {
+      local name="$1"
+      case "$name" in
+        -h|--help|help)
+          use_usage "$@"
+          return $?
+          ;;
+        '')
+          err_usage 'NAME is required'
+          return $?
+          ;;
+        *)
+          use_den "$@"
+      esac
+    }
+
+    use_action "$@"
+  }
+
+  list_cmd() {
+    list_usage() {
+      cat <<EOF >&2
+Usage: den list
+
+  List available dens.
+
+Flags:
+  -h, --help    Print this help
+
+Actions:
+  help    Print this help
+EOF
+    }
+
+    list_dens() {
+      for dir in $(echo "${DEN_PATH//:/$'\n'}")
+      do
+        dens="$dir/dens"
+        if [ -d "$dens" ]
+        then
+          ls "$dens"
+        fi
+      done
+    }
+
+    list_action() {
+      local action="$1"
+      case "$action" in
+        -h|--help|help)
+          list_usage "$@"
+          return $?
+          ;;
+        '')
+          list_dens
+          ;;
+        *)
+          err_usage "Unknown arguments: %s" "$@"
+          ;;
+      esac
+    }
+
+    list_action "$@"
+  }
+
+  down_cmd() {
+    down_usage() { # den list
+      cat <<-EOF >&2
+  Usage: den down NAME
+
+    Destroy a den.
+
+  Flags:
+    -h, --help    Print this help
+
+  Actions:
+    Print this help
+EOF
+    }
+
+    down-namespace() {
+      local name="$1"
+      if kubectl get namespace "$name" 1>&- 2>&-
+      then
+        run "Bringing down $name" kubectl delete namespace "$name"
+      else
+        checkmark "Bringing down %s\n" "$name"
+      fi
+    }
+
+    down_den() {
+      if [ $# -gt 1 ]
+      then
+        err_usage "Too many arguments: %s" "$@"
+        return $?
+      fi
+
+      local name="$1"
+
+      if [ "$name" == "" ]
+      then
+        name=$(cat "$XDG_CONFIG_HOME/den/active")
+        if [ "$name" = "" ]
+        then
+          xmark "No den is active\n"
+          hint "Activate a den with 'den use'"
+          return 1
+        fi
+      fi
+
+      local path
+      for dir in $(echo "${DEN_PATH//:/$'\n'}")
+      do
+        den_path="$dir/dens/$name"
+        if [ -d "$den_path" ]
+        then
+          path="$den_path"
+          break
+        fi
+      done
+
+      if [ "$path" = "" ]
+      then
+        xmark "$name is undefined\n"
+        hint "List available dens with 'den list'"
+        hint "Define a den with 'den define'"
+        return 1
+      fi
+
+      . "$path/config"
+      export DEN_NAMESPACE
+
+      down-namespace "$DEN_NAMESPACE"
+    }
+
+    down_action() {
+      local name="$1"
+      case "$name" in
+        -h|--help|help)
+          down_usage "$@"
+          return $?
+          ;;
+        *)
+          down_den "$@"
+          ;;
+      esac
+    }
+
+    down_action "$@"
+  }
+
+  den_kubectl() {
+    precheck || return $?
+    den_activate || return $?
+    kubectl --namespace="$DEN_NAMESPACE" "$@"
+  }
+
+  den_run() {
+    quietly den_activate
+    if [[ ! "$1" == */* ]]
+    then
+      err_usage "Unknown arguments: %s" "$@"
+      return 1
+    fi
+
+    local v=${1/\// }; shift; set -- $v "$@"
+    local app="$1"
+    local cmd="$2"
+    shift; shift
+
+    local app_dir=$(app_dir "$app")
+    if [ -x "$app_dir/tools/$cmd" ]
+    then
+      cd "$app_dir" && "tools/$cmd" "$@"
+    else
+      kubectl exec -it "svc/$app" -- "$cmd" "$@"
+    fi
+  }
+
+  print_deps() {
+    local app="$1"
+    local app_dir=$(app_dir "$app")
+
+    [ "$app_dir" != "" ] || return 1
+
+    if [ -f "$app_dir/Den" ]
+    then
+      cat "$app_dir/Den"
+    fi
+  }
+
+  deps() {
+    local app="$1"
+    local deps=$(print_deps "$app")
+
+    for app in $deps
+    do
+      deps "$app"
+    done
+
+    echo "$deps"
+  }
+
+  deploy_app() {
+    app_dir="$1"
+    app="$2"
+    if [ -x "$app_dir/tools/apply" ]
+    then
+      run_step "Installing $app" "cd \"$app_dir\" && \"tools/apply\" \"$app\""
+    elif [ -f "$app_dir/app/kustomization.yaml" ]
+    then
+      run_step "Installing $app" kubectl apply -k "$app_dir/app"
+    elif [ -f "$app_dir/app/values.yaml" ]
+    then
+      run_step "Installing" helm --namespace "$DEN_NAMESPACE" install "$app" "$app_dir/app"
+    fi
+  }
+
+  wait_for() {
+    app_dir="$1"
+    app="$2"
+    if [ -x "$app_dir/tools/wait-for" ]
+    then
+      run_step "Waiting for $app" "cd $app_dir && tools/wait-for"
+    else
+      run_step "Waiting for $app" kubectl wait --for=condition=Ready pods -l "app=$app" --timeout=600s
+    fi
+    checkmark "Installed $app\n"
+  }
+
+  app_dir() {
+    local app="$1"
+
+    for dir in $(echo "${DEN_PATH//:/$'\n'}")
+    do
+      app_dir="$dir/apps/$app"
+      if [ -d "$app_dir" ]
+      then
+        echo "$app_dir"
+        break
+      fi
+    done
+  }
+
+  discover_possible_profiles() {
+    local app="$1"
+    for dir in $(echo "${DEN_PATH//:/$'\n'}")
+    do
+      for profile in "$dir"/profiles/*
+      do
+        if [ -d "$profile/apps/$app" ]
+        then
+          echo $profile
+        fi
+      done
+    done
+  }
+
+  den_deploy() {
+    den_activate
+
+    indent
+    local app="$1"
+    local app_dir=$(app_dir "$app")
+
+    if [ "$app_dir" == "" ]
+    then
+      xmark "Unable to find a definition of $app\n"
+      local profiles=$(discover_possible_profiles "$app")
+      for profile in $profiles
+      do
+        local profile_name=$(basename "$profile")
+        hint "$name is defined in $profile. Add it to your den with:\n\n          den define $ACTIVE_DEN --profile $profile_name\n"
+      done
+      return 1
+    fi
+
+    # predeploy
+    if [ -d "$app_dir/predeploy" ]
+    then (
+      checkmark "Installing $app\n"
+      cd "$app_dir"
+      for step in predeploy/*
+      do
+        local desc="${step##*/}"
+        desc=${desc%.*}; desc=${desc/-/ }; set -- $desc; shift
+        desc=$(echo "$@" | tr - ' ')
+
+        indent
+        run_step "$desc" "$step" || return $?
+        unindent
+      done
+    )
+    fi
+
+    if [ -f "$app_dir/.env" ]
+    then
+      set -a
+      # shellcheck disable=SC1090
+      . "$app_dir/.env"
+      set +a
+    fi
+
+    deploy_app "$app_dir" "$app" || return $?
+    wait_for "$app_dir" "$app" || return $?
+    unindent
+  }
+
+  stack_deploy() {
+    local app="$1"
+
+    for dep in $(deps "$app")
+    do
+      den_deploy "$dep" || return $?
+    done
+
+    den_deploy "$app" || return $?
+  }
+
+  den_activated=0
+  den_activate() {
+    [ "$den_activated" = "1" ] && return
+
+    ACTIVE_DEN=$(cat "$XDG_CONFIG_HOME/den/active")
+    if [ "$ACTIVE_DEN" = "" ]
+    then
+      xmark "No den is active\n"
+      hint "Activate a den with 'den use'"
+      return 1
+    fi
+
+    . "$XDG_CONFIG_HOME/den/dens/$ACTIVE_DEN/config"
+    export DEN_NAMESPACE
+
+    if [ "$DEN_PROFILE" != "" ]
+    then
+      # Add profile to DEN_PATH
+      for dir in $(echo "${DEN_PATH//:/$'\n'}")
+      do
+        profile_den="$dir/profiles/$DEN_PROFILE"
+        if [ -d "$profile_den" ]
+        then
+          DEN_PATH="$DEN_PATH:$profile_den"
+          break
+        fi
+      done
+    fi
+
+    switch-den-context "$DEN_CONTEXT" "$DEN_NAMESPACE" "$DEN_CLUSTER_NAME"  "$DEN_CLUSTER_USER"|| return $?
+    ensure-namespace "$DEN_NAMESPACE" || return $?
+    den_activated=1
+  }
+
+  get_app() {
+    local app="$1"
+
+    if [ "$app" == "" ]
+    then
+      # See if there is a default in .den)
+      if [ -f ".den/apps/Den" ]
+      then
+        cat ".den/apps/Den"
+      fi
+    else
+      echo "$app"
+    fi
+  }
+
+  den_stack() {
+    precheck || return $?
+    den_activate || return $?
+    app=$(get_app "$1")
+
+    if [ "$app" == "" ]
+    then
+      err_usage "APP is required"
+      return 1
+    fi
+
+    stack_deploy "$app"
+  }
+
+  den_action "$@" # den
+  return $?
+}
+
+docs() {
+  cat <<'EOF'
+Den is a tool for working with application stacks in kubernetes.
+
+Defining Dens
+-------------
+A den is defined with `den define`. This defines a den named `acme-local`:
+
+  ❯ den define acme-local --namespace=acme --context=minikube --profile=development
+  [✔] Defined den: acme-local
+
+Den definitions are saved in "~/.config/den" when defined on the command line.
+
+
+Activating Dens
+---------------
+After defining a den, it can be made active by using it:
+
+  ❯ den use acme-local
+  [✔] Activated den acme-local
+
+After being made active, subsequent den commands will automatically run within
+that environment.
+
+See your list of defined dens with `den list`:
+
+  ❯ den list
+  acme-local      devkit
+
+When a den is made activate, DEN_PATH is searched for its definition. By
+default, DEN_PATH is "~/.config/den:./den". Having "./den" on DEN_PATH allows
+definitions to be shared in projects.
+
+Defining a den creates a kubectl context. Using a den makes that context active.
+
+  ❯ kubectl config get-contexts
+  CURRENT   NAME                 CLUSTER         AUTHINFO        NAMESPACE
+            minikube             minikube        minikube
+  *         minikube-acme        minikube        minikube        acme
+
+
+Deploying apps
+--------------
+An app is deployed with `den up`. Here is an example from
+https://github.com/matthias-margush/den-example:
+
+  ❯ den up
+   [✔] Installing vault
+   [✔] Waiting for vault
+   [✔] Installing db
+   [✔] Waiting for db
+    [✔] create database
+    [✔] run database migrations
+   [✔] Installing
+   [✔] Waiting for acmeserv
+
+The apps will be deployed into the active den:
+
+  ❯ kubectl get svc
+  NAME                       TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)             AGE
+  db                         NodePort    10.111.229.111   <none>        5432:32738/TCP      27m
+  vault                      ClusterIP   10.97.100.98     <none>        8200/TCP,8201/TCP   27m
+  vault-agent-injector-svc   ClusterIP   10.101.158.202   <none>        443/TCP             27m
+
+Den determines what apps to install, in what order, and how, from the
+definitions in the "apps/" subdirectory of each path on DEN_PATH. If a den is
+defined with a profile, "profiles/$profile/app" is also searched within each
+DEN_PATH.
+
+  ❯ den define acme-local --namespace=acme --context=minikube --profile=development
+  [✔] Defined den: acme-local
+EOF
+}
+
+den_cmd "$@"
+exit $?
