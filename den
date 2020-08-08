@@ -218,6 +218,25 @@ hints() {
   esac
 }
 
+den_dir() {
+  local name="$1"
+  local den_dir
+  for dir in $(echo "${DEN_PATH//:/$'\n'}")
+  do
+    d="$dir/dens/$name"
+    if [ -d "$d" ]
+    then
+      echo "$d"
+      return 0
+    fi
+  done
+
+  xmark "$name is undefined\n"
+  hint "List available dens with 'den list'"
+  hint "Define a den with 'den define'"
+  exit 1
+}
+
 den_cmd() {
   err_usage() { # den
     local format="$1"; shift
@@ -653,26 +672,7 @@ EOF
           ;;
       esac
 
-      local den_dir
-      for dir in $(echo "${DEN_PATH//:/$'\n'}")
-      do
-        d="$dir/dens/$name"
-        if [ -d "$d" ]
-        then
-          den_dir="$d"
-          break
-        fi
-      done
-
-      if [ "$den_dir" = "" ]
-      then
-        xmark "$name is undefined\n"
-        hint "List available dens with 'den list'"
-        hint "Define a den with 'den define'"
-        return 1
-      fi
-
-      cat "$den_dir/config"
+      cat "$(den_dir $name)/config"
     }
 
     describe_action "$@"
@@ -895,7 +895,8 @@ EOF
     local app_dir=$(app_dir "$app")
     if [ -x "$app_dir/tools/$cmd" ]
     then
-      cd "$app_dir" && "tools/$cmd" "$@"
+      local work_dir="$PWD"
+      cd "$app_dir" && "tools/$cmd" "$work_dir" "$@"
     else
       kubectl exec -it "svc/$app" -- "$cmd" "$@"
     fi
@@ -930,7 +931,8 @@ EOF
     app="$2"
     if [ -x "$app_dir/tools/apply" ]
     then
-      run_step "Installing $app" "cd \"$app_dir\" && \"tools/apply\" \"$app\""
+      local work_dir="$PWD"
+      run_step "Installing $app" "cd \"$app_dir\" && \"tools/apply\" \"$work_dir\" \"$app\""
     elif [ -f "$app_dir/app/kustomization.yaml" ]
     then
       run_step "Installing $app" kubectl apply -k "$app_dir/app"
@@ -945,7 +947,8 @@ EOF
     app="$2"
     if [ -x "$app_dir/tools/wait-for" ]
     then
-      run_step "Waiting for $app" "cd $app_dir && tools/wait-for"
+      local work_dir="$PWD"
+      run_step "Waiting for $app" "cd $app_dir && tools/wait-for $work_dir"
     else
       run_step "Waiting for $app" kubectl wait --for=condition=Ready pods -l "app=$app" --timeout=600s
     fi
@@ -1053,7 +1056,7 @@ EOF
       return 1
     fi
 
-    . "$XDG_CONFIG_HOME/den/dens/$ACTIVE_DEN/config"
+    . "$(den_dir $ACTIVE_DEN)/config"
     export DEN_NAMESPACE
 
     if [ "$DEN_PROFILE" != "" ]
