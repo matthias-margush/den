@@ -29,12 +29,20 @@
 
 trap 'j=$(jobs -p); if [ "$j" != "" ]; then echo kill $p; kill "$p"; fi' EXIT
 
-SCRIPT_DIR=$(dirname "$0")
 XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-$HOME/.config}
 export DEN_PATH="${DEN_PATH:-$XDG_CONFIG_HOME/den:$PWD/.den}"
-DEN_VERBOSE=${DEN_VERBOSE:-f}
 
+DEN_VERBOSE=${DEN_VERBOSE:-f}
 export DEN_VERBOSE
+if [ "$DEN_VERBOSE" = 'y' ] \
+    || [ "$DEN_VERBOSE" = 't' ] \
+    || [ "$DEN_VERBOSE" = 'yes' ] \
+    || [ "$DEN_VERBOSE" = 'true' ]
+then
+  verbose=true
+else
+  verbose=false
+fi
 
 red='\033[0;31m'
 green='\033[0;32m'
@@ -75,7 +83,7 @@ err() {
   return 1
 }
 
-clearline() {
+clear_line() {
   printf "\r                                                                                            "
 }
 
@@ -83,7 +91,7 @@ checkmark() {
   local format="$1"; shift
   if [ $be_quiet -eq 0 ]
   then
-    clearline
+    clear_line
     printf "\r"
     padding
     # shellcheck disable=SC2059
@@ -114,25 +122,16 @@ logged() {
   sed "s/^/ $p/" "$file"
 }
 
-verbose() {
-    [ "$DEN_VERBOSE" = 'y' ] \
-    || [ "$DEN_VERBOSE" = 't' ] \
-    || [ "$DEN_VERBOSE" = 'yes' ] \
-    || [ "$DEN_VERBOSE" = 'true' ]
-
-  return $?
-}
-
 spin() {
   local output="$1"
   local pid="$2"
   local message="$3"
 
-  if verbose
+  if $verbose
   then
-    sed "s/^/ $(padding)/" <"$1"
+    sed "s/^/ $(padding)/" <"$output"
     wait "$pid"
-    return $ret
+    return $?
   fi
 
   if [ $be_quiet -gt 0 ]
@@ -153,43 +152,46 @@ spin() {
   return $?
 }
 
+
+if $verbose
+then
+  step_output=$(mktemp -u)
+  mkfifo -m 600 "$step_output"
+else
+  step_output=$(mktemp)
+fi
+trap '{ rm -f "$step_output"; }' EXIT
+
 run_step() {
   local message="$1"
   shift
-  local out
-  if verbose
-  then
-    out=$(mktemp -u); trap "{ rm -f $out; }" EXIT
-    mkfifo -m 600 "$out"
-  else
-    out=$(mktemp); trap "{ rm -f $out; }" EXIT
-  fi
+#  local out
 
   if [ "$message" != "" ] && [ $be_quiet -eq 0 ]
   then
-    verbose && printf "\n$(padding)${green}[✔] ${clear}$message:\n"
-    verbose && printf " %s❯ %s\n" "$(padding)" "$*"
-    verbose || printf "\r$(padding)${green}[ ] ${clear}$message"
+    $verbose && printf "\n$(padding)${green}[✔] ${clear}$message:\n"
+    $verbose && printf " %s❯ %s\n" "$(padding)" "$*"
+    $verbose || printf "\r$(padding)${green}[ ] ${clear}$message"
   fi
 
-  sh -c "$*" >"$out" 2>"$out" &
-  spin "$out" $! "$message"
+  sh -c "$*" >"$step_output" 2>"$step_output" &
+  spin "$step_output" $! "$message"
 
   local result=$?
   if [ $result -ne 0 ]
   then
-    clearline
+    clear_line
     printf "\r$(padding)${red}[✘] ${clear}%s: Failed 😿" "$message"
-    if ! verbose
+    if ! $verbose
     then
-      logged "$out" "$@"
+      logged "$step_output" "$@"
     fi
   else
-    if [ $be_quiet -eq 0 ] && ! verbose
+    if [ $be_quiet -eq 0 ] && ! $verbose
     then
-      clearline
+      clear_line
       printf "\r$(padding)${green}[✔] ${clear}$message"
-      verbose && logged "$out" "$@"
+      $verbose && logged "$step_output" "$@"
     fi
   fi
   return $result
@@ -895,8 +897,7 @@ EOF
     local app_dir=$(app_dir "$app")
     if [ -x "$app_dir/tools/$cmd" ]
     then
-      local work_dir="$PWD"
-      cd "$app_dir" && "tools/$cmd" "$work_dir" "$@"
+      cd "$app_dir" && "tools/$cmd" "$@"
     else
       kubectl exec -it "svc/$app" -- "$cmd" "$@"
     fi
@@ -929,10 +930,10 @@ EOF
   deploy_app() {
     app_dir="$1"
     app="$2"
-    if [ -x "$app_dir/tools/apply" ]
+    if [ -x "$app_dir/deploy/apply" ]
     then
       local work_dir="$PWD"
-      run_step "Installing $app" "cd \"$app_dir\" && \"tools/apply\" \"$work_dir\" \"$app\""
+      run_step "Installing $app" "cd \"$app_dir\" && \"deploy/apply\" \"$work_dir\" \"$app\""
     elif [ -f "$app_dir/app/kustomization.yaml" ]
     then
       run_step "Installing $app" kubectl apply -k "$app_dir/app"
@@ -945,10 +946,10 @@ EOF
   wait_for() {
     app_dir="$1"
     app="$2"
-    if [ -x "$app_dir/tools/wait-for" ]
+    if [ -x "$app_dir/deploy/wait-for" ]
     then
       local work_dir="$PWD"
-      run_step "Waiting for $app" "cd $app_dir && tools/wait-for $work_dir"
+      run_step "Waiting for $app" "cd $app_dir && deploy/wait-for $work_dir"
     else
       run_step "Waiting for $app" kubectl wait --for=condition=Ready pods -l "app=$app" --timeout=600s
     fi
