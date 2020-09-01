@@ -933,7 +933,7 @@ EOF
     if [ -x "$app_dir/deploy/apply" ]
     then
       local work_dir="$PWD"
-      run_step "Installing $app" "cd \"$app_dir\" && \"deploy/apply\" \"$work_dir\" \"$app\""
+      run_step "Installing $app" "cd \"$app_dir\" && \"deploy/apply\" \"$app\""
     elif [ -f "$app_dir/app/kustomization.yaml" ]
     then
       run_step "Installing $app" kubectl apply -k "$app_dir/app"
@@ -949,7 +949,7 @@ EOF
     if [ -x "$app_dir/deploy/wait-for" ]
     then
       local work_dir="$PWD"
-      run_step "Waiting for $app" "cd $app_dir && deploy/wait-for $work_dir"
+      run_step "Waiting for $app" "cd \"$app_dir\" && deploy/wait-for"
     else
       run_step "Waiting for $app" kubectl wait --for=condition=Ready pods -l "app=$app" --timeout=600s
     fi
