@@ -896,7 +896,6 @@ EOF
     local app_dir=$(app_dir "$app")
     if [ -x "$app_dir/scripts/$cmd" ]
     then
-      echo script exists "$cmd"
       "${app_dir}/scripts/$cmd" "$@"
       exit
     fi
