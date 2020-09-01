@@ -882,7 +882,6 @@ EOF
   }
 
   den_run() {
-    quietly den_activate
     if [[ ! "$1" == */* ]]
     then
       err_usage "Unknown arguments: %s" "$@"
@@ -893,6 +892,16 @@ EOF
     local app="$1"
     local cmd="$2"
     shift; shift
+
+    local app_dir=$(app_dir "$app")
+    if [ -x "$app_dir/scripts/$cmd" ]
+    then
+      echo script exists "$cmd"
+      "${app_dir}/scripts/$cmd" "$@"
+      exit
+    fi
+
+    quietly den_activate
 
     local app_dir=$(app_dir "$app")
     if [ -x "$app_dir/tools/$cmd" ]
