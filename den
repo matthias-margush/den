@@ -897,7 +897,7 @@ EOF
     local app_dir=$(app_dir "$app")
     if [ -x "$app_dir/tools/$cmd" ]
     then
-      cd "$app_dir" && "tools/$cmd" "$@"
+      "${app_dir}/tools/$cmd" "$@"
     else
       kubectl exec -it "svc/$app" -- "$cmd" "$@"
     fi
